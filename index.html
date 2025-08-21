@@ -2,24 +2,35 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8">
-  <title>Creador de Mapas Mentales</title>
+  <title>🧠 Creador de Mapas Mentales</title>
   <style>
     body { margin:0; background:#1e1e1e; color:white; font-family:sans-serif; overflow:hidden; }
-    #toolbar { position:fixed; top:10px; left:10px; background:#333; padding:10px; border-radius:8px; }
+    #toolbar { position:fixed; top:10px; left:10px; background:#333; padding:10px; border-radius:8px; z-index:10; }
     button { margin:2px; padding:6px 10px; border:none; border-radius:5px; background:#555; color:white; cursor:pointer; }
     button:hover { background:#777; }
     svg { width:100vw; height:100vh; }
     .node { fill:#4cafef; stroke:#0f172a; stroke-width:2; cursor:move; }
     .node-text { fill:white; font-size:14px; pointer-events:none; }
     line { stroke:white; stroke-width:2; marker-end:url(#arrow); }
+    input.inline-edit { 
+      position:absolute; 
+      font-size:14px; 
+      border:none; 
+      padding:2px; 
+      border-radius:4px; 
+      outline:none;
+    }
   </style>
 </head>
 <body>
   <div id="toolbar">
     <button onclick="addNode()">➕ Nodo</button>
-    <button onclick="connectMode()">🔗 Conectar</button>
-    <button onclick="deleteMode()">❌ Borrar</button>
+    <button onclick="setMode('connect')">🔗 Conectar</button>
+    <button onclick="setMode('delete')">❌ Borrar</button>
+    <button onclick="exportMap()">💾 Exportar</button>
+    <button onclick="importMap()">📂 Importar</button>
   </div>
+
   <svg id="mindmap">
     <defs>
       <marker id="arrow" markerWidth="10" markerHeight="10" refX="10" refY="3" orient="auto" markerUnits="strokeWidth">
@@ -30,30 +41,38 @@
 
   <script>
     const svg = document.getElementById("mindmap");
+    let nodes = [];
+    let edges = [];
     let nodeId = 0;
     let selected = null;
     let mode = "move";
     let startNode = null;
 
-    function addNode() {
+    function setMode(m){ mode=m; }
+
+    function addNode(x=200,y=200,text="Nodo "+nodeId) {
+      const node = { id: nodeId, x, y, text };
+      nodes.push(node);
+
       const g = document.createElementNS("http://www.w3.org/2000/svg","g");
       g.setAttribute("class","node-group");
-      g.setAttribute("transform",`translate(${100+nodeId*20},100)`);
       g.dataset.id = nodeId;
 
       const circle = document.createElementNS("http://www.w3.org/2000/svg","circle");
       circle.setAttribute("r",40);
       circle.setAttribute("class","node");
 
-      const text = document.createElementNS("http://www.w3.org/2000/svg","text");
-      text.setAttribute("class","node-text");
-      text.setAttribute("text-anchor","middle");
-      text.setAttribute("dy",".3em");
-      text.textContent = "Nodo "+nodeId;
+      const label = document.createElementNS("http://www.w3.org/2000/svg","text");
+      label.setAttribute("class","node-text");
+      label.setAttribute("text-anchor","middle");
+      label.setAttribute("dy",".3em");
+      label.textContent = text;
 
       g.appendChild(circle);
-      g.appendChild(text);
+      g.appendChild(label);
       svg.appendChild(g);
+
+      updateNodePosition(g,node);
 
       g.addEventListener("mousedown", startDrag);
       g.addEventListener("mouseup", endDrag);
@@ -63,60 +82,133 @@
       nodeId++;
     }
 
-    function editText(e) {
-      const textEl = e.currentTarget.querySelector("text");
-      const newText = prompt("Editar texto:", textEl.textContent);
-      if (newText) textEl.textContent = newText;
+    function updateNodePosition(g,node){
+      g.setAttribute("transform",`translate(${node.x},${node.y})`);
     }
 
-    function connectMode() { mode="connect"; }
-    function deleteMode() { mode="delete"; }
-    function startDrag(e) {
-      if (mode==="move") {
+    function editText(e){
+      const g=e.currentTarget;
+      const node=nodes.find(n=>n.id==g.dataset.id);
+      const [x,y]=[node.x,node.y];
+
+      const input=document.createElement("input");
+      input.className="inline-edit";
+      input.value=node.text;
+      document.body.appendChild(input);
+
+      const pt=svg.createSVGPoint();
+      pt.x=x; pt.y=y;
+      const screen=pt.matrixTransform(svg.getScreenCTM());
+      input.style.left=(screen.x-30)+"px";
+      input.style.top=(screen.y-10)+"px";
+
+      input.focus();
+      input.addEventListener("blur",()=>{
+        node.text=input.value;
+        g.querySelector("text").textContent=node.text;
+        input.remove();
+      });
+    }
+
+    function startDrag(e){
+      if (mode==="move"){
         selected = e.currentTarget;
         svg.addEventListener("mousemove", drag);
       }
     }
-    function drag(e) {
-      if (selected) {
-        const CTM = svg.getScreenCTM();
-        const x = (e.clientX - CTM.e) / CTM.a;
-        const y = (e.clientY - CTM.f) / CTM.d;
-        selected.setAttribute("transform",`translate(${x},${y})`);
-      }
-    }
-    function endDrag() {
-      selected=null;
-      svg.removeEventListener("mousemove", drag);
+
+    function drag(e){
+      if (!selected) return;
+      const id=selected.dataset.id;
+      const node=nodes.find(n=>n.id==id);
+      const CTM = svg.getScreenCTM();
+      const x = (e.clientX - CTM.e) / CTM.a;
+      const y = (e.clientY - CTM.f) / CTM.d;
+      node.x=x; node.y=y;
+      updateNodePosition(selected,node);
+      updateEdges();
     }
 
-    function handleClick(e) {
-      const g = e.currentTarget;
-      if (mode==="connect") {
-        if (!startNode) {
-          startNode=g;
+    function endDrag(){ selected=null; svg.removeEventListener("mousemove", drag); }
+
+    function handleClick(e){
+      const g=e.currentTarget;
+      const node=nodes.find(n=>n.id==g.dataset.id);
+      if (mode==="connect"){
+        if (!startNode){
+          startNode=node;
         } else {
-          const line = document.createElementNS("http://www.w3.org/2000/svg","line");
-          const [x1,y1]=getCenter(startNode);
-          const [x2,y2]=getCenter(g);
-          line.setAttribute("x1",x1);
-          line.setAttribute("y1",y1);
-          line.setAttribute("x2",x2);
-          line.setAttribute("y2",y2);
-          svg.insertBefore(line,svg.firstChild);
+          edges.push({ from:startNode.id, to:node.id });
+          drawEdge(startNode,node);
           startNode=null;
           mode="move";
         }
-      } else if (mode==="delete") {
+      } else if (mode==="delete"){
+        nodes=nodes.filter(n=>n.id!=node.id);
+        edges=edges.filter(ed=>ed.from!=node.id && ed.to!=node.id);
         g.remove();
+        redrawEdges();
         mode="move";
       }
     }
 
-    function getCenter(g) {
-      const transform=g.getAttribute("transform");
-      const match=transform.match(/translate\(([^,]+),([^\)]+)\)/);
-      return [parseFloat(match[1]), parseFloat(match[2])];
+    function drawEdge(n1,n2){
+      const line=document.createElementNS("http://www.w3.org/2000/svg","line");
+      line.dataset.from=n1.id;
+      line.dataset.to=n2.id;
+      svg.insertBefore(line,svg.firstChild);
+      updateEdges();
+    }
+
+    function updateEdges(){
+      const lines=svg.querySelectorAll("line");
+      lines.forEach(line=>{
+        const from=nodes.find(n=>n.id==line.dataset.from);
+        const to=nodes.find(n=>n.id==line.dataset.to);
+        if (from && to){
+          line.setAttribute("x1",from.x);
+          line.setAttribute("y1",from.y);
+          line.setAttribute("x2",to.x);
+          line.setAttribute("y2",to.y);
+        }
+      });
+    }
+
+    function redrawEdges(){
+      svg.querySelectorAll("line").forEach(l=>l.remove());
+      edges.forEach(ed=>{
+        const n1=nodes.find(n=>n.id==ed.from);
+        const n2=nodes.find(n=>n.id==ed.to);
+        if (n1 && n2) drawEdge(n1,n2);
+      });
+    }
+
+    function exportMap(){
+      const data=JSON.stringify({nodes,edges});
+      const blob=new Blob([data],{type:"application/json"});
+      const a=document.createElement("a");
+      a.href=URL.createObjectURL(blob);
+      a.download="mapa.json";
+      a.click();
+    }
+
+    function importMap(){
+      const input=document.createElement("input");
+      input.type="file";
+      input.accept=".json";
+      input.onchange=async()=>{
+        const file=input.files[0];
+        const text=await file.text();
+        const data=JSON.parse(text);
+        nodes=data.nodes;
+        edges=data.edges;
+        nodeId=Math.max(...nodes.map(n=>n.id))+1;
+        svg.querySelectorAll("g").forEach(g=>g.remove());
+        svg.querySelectorAll("line").forEach(l=>l.remove());
+        nodes.forEach(n=>addNode(n.x,n.y,n.text));
+        redrawEdges();
+      };
+      input.click();
     }
   </script>
 </body>
