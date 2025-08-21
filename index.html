@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Creador de Mapas Mentales</title>
+  <style>
+    :root{
+      --bg: #0f1221;
+      --panel: #151935;
+      --panel-2: #1b2045;
+      --accent: #7c5cff;
+      --accent-2:#5eead4;
+      --text: #eef2ff;
+      --muted: #9aa2c7;
+      --danger:#ff6b6b;
+      --shadow: 0 8px 30px rgba(0,0,0,.35);
+      --glass: rgba(255,255,255,0.06);
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;background: radial-gradient(1200px 700px at 30% 10%, #1a1f3e 0%, #0c0f1f 60%, #070912 100%);color:var(--text);font:14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial}
+
+    /* Toolbar */
+    .toolbar{position:fixed;inset:16px 16px auto 16px;display:flex;gap:10px;align-items:center;padding:10px 12px;background:linear-gradient(180deg, var(--panel), var(--panel-2));border:1px solid #2a2f58;border-radius:16px;box-shadow:var(--shadow);backdrop-filter: blur(6px)}
+    .btn{appearance:none;border:1px solid #2a2f58;background:var(--glass);color:var(--text);padding:9px 12px;border-radius:12px;cursor:pointer;display:inline-flex;align-items:center;gap:8px;transition:transform .05s ease, background .2s ease, border-color .2s}
+    .btn:hover{background:#242a55}
+    .btn:active{transform:translateY(1px)}
+    .btn[data-active="true"]{border-color:var(--accent);box-shadow:0 0 0 3px rgba(124,92,255,.25) inset}
+    .btn.danger{border-color:#5b2930}
+    .btn.small{padding:6px 10px;font-size:12px}
+    .sep{width:1px;height:28px;background:#2a2f58;margin:0 4px;border-radius:1px}
+    .badge{font-size:11px;color:var(--muted)}
+    label{font-size:12px;color:var(--muted)}
+
+    /* Workspace */
+    #workspace{position:fixed;inset:0;overflow:hidden}
+    #canvas{position:absolute;inset:0;transform-origin:0 0}
+
+    /* Background grid */
+    .grid{position:absolute;inset:0;background-image: linear-gradient(transparent 23px, rgba(255,255,255,0.04) 24px), linear-gradient(90deg, transparent 23px, rgba(255,255,255,0.04) 24px);background-size:24px 24px;pointer-events:none}
+
+    /* SVG behind nodes */
+    svg#wires{position:absolute;inset:0;pointer-events:none}
+    .wire{stroke:#99a2ff;stroke-width:2.25;opacity:.9}
+
+    /* Nodes */
+    .node{position:absolute;min-width:140px;max-width:260px;padding:14px 14px;border-radius:22px;background:linear-gradient(180deg, rgba(124,92,255,.18), rgba(94,234,212,.14));border:1px solid #39407a;box-shadow:var(--shadow);cursor:move;user-select:none}
+    .node .title{font-weight:700;margin-bottom:8px}
+    .node .content{outline:none}
+    .node .pins{position:absolute;right:8px;top:8px;display:flex;gap:6px}
+    .pin{width:10px;height:10px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 2px rgba(0,0,0,.25)}
+    .node.selected{border-color:var(--accent);box-shadow:0 0 0 3px rgba(124,92,255,.25)}
+
+    /* Mini help */
+    .help{position:fixed;right:16px;bottom:16px;background:linear-gradient(180deg, var(--panel), var(--panel-2));border:1px solid #2a2f58;color:var(--muted);padding:10px 12px;border-radius:12px;max-width:360px}
+    .help b{color:var(--text)}
+
+    /* Import input hidden */
+    #importInput{display:none}
+
+    @media (max-width:720px){.toolbar{left:8px;right:8px;flex-wrap:wrap;gap:8px}}
+  </style>
+</head>
+<body>
+  <div class="toolbar" id="toolbar">
+    <button class="btn" id="addNode" title="Agregar globo (N)">➕ Nuevo</button>
+    <button class="btn" id="connect" title="Conectar (C)">🔗 Conectar</button>
+    <button class="btn" id="toggleArrow" title="Activar/Desactivar flecha en conexiones">➡️ Flecha</button>
+    <button class="btn danger" id="deleteSel" title="Borrar selección (Supr)">🗑️ Borrar</button>
+    <span class="sep"></span>
+    <label for="zoom">Zoom</label>
+    <input id="zoom" type="range" min="50" max="200" value="100" />
+    <button class="btn small" id="resetZoom">100%</button>
+    <span class="sep"></span>
+    <button class="btn" id="exportBtn" title="Exportar como JSON">💾 Exportar</button>
+    <button class="btn" id="importBtn" title="Importar desde JSON">📂 Importar</button>
+    <input type="file" id="importInput" accept="application/json">
+    <span class="badge" id="status">Listo</span>
+  </div>
+
+  <div id="workspace">
+    <div id="canvas">
+      <svg id="wires"></svg>
+      <div class="grid"></div>
+      <!-- Nodes are injected here -->
+    </div>
+  </div>
+
+  <div class="help">
+    <b>Atajos:</b> N = nuevo, C = conectar, Supr = borrar, Esc = cancelar conexión. Doble clic para editar texto. Arrastra para mover. Exporta/Importa JSON.
+  </div>
+
+  <script>
+  ;(() => {
+    const el = (sel, root=document) => root.querySelector(sel)
+    const els = (sel, root=document) => Array.from(root.querySelectorAll(sel))
+
+    // State
+    const state = {
+      nodes: [], // {id, x, y, title, text}
+      wires: [], // {id, from, to, arrow}
+      selectedNodeId: null,
+      connectingFrom: null,
+      withArrow: true,
+      zoom: 1
+    }
+
+    const canvas = el('#canvas')
+    const svg = el('#wires')
+    const status = el('#status')
+
+    // Helpers
+    const uid = () => Math.random().toString(36).slice(2, 9)
+    const setStatus = (msg) => { status.textContent = msg; setTimeout(()=> status.textContent = 'Listo', 1800) }
+
+    function nodeCenter(nodeEl){
+      const r = nodeEl.getBoundingClientRect()
+      const c = canvas.getBoundingClientRect()
+      const x = (r.left - c.left) + r.width/2
+      const y = (r.top - c.top) + r.height/2
+      return {x, y}
+    }
+
+    function updateSVGSize(){
+      const rect = canvas.getBoundingClientRect()
+      svg.setAttribute('width', rect.width)
+      svg.setAttribute('height', rect.height)
+    }
+
+    // Rendering
+    function render(){
+      updateSVGSize()
+      // Render nodes
+      // remove all nodes first (except svg and grid)
+      els('.node', canvas).forEach(n => n.remove())
+
+      state.nodes.forEach(n => {
+        const d = document.createElement('div')
+        d.className = 'node'
+        d.style.left = n.x + 'px'
+        d.style.top = n.y + 'px'
+        d.dataset.id = n.id
+        if(n.id === state.selectedNodeId) d.classList.add('selected')
+        d.innerHTML = `
+          <div class="pins"><span class="pin"></span><span class="pin" style="background:var(--accent-2)"></span></div>
+          <div class="title" contenteditable="true" spellcheck="false">${n.title}</div>
+          <div class="content" contenteditable="true" spellcheck="false">${n.text}</div>
+        `
+        canvas.appendChild(d)
+        makeDraggable(d)
+        // Edit handlers update state on blur
+        d.querySelector('.title').addEventListener('input', e=>{ n.title = e.target.innerText })
+        d.querySelector('.content').addEventListener('input', e=>{ n.text = e.target.innerText })
+        d.addEventListener('mousedown', ()=> selectNode(n.id))
+      })
+
+      // Render wires
+      svg.innerHTML = ''
+      const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs')
+      defs.innerHTML = `
+        <marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#99a2ff" />
+        </marker>`
+      svg.appendChild(defs)
+
+      state.wires.forEach(w => {
+        const fromEl = el(`.node[data-id="${w.from}"]`, canvas)
+        const toEl = el(`.node[data-id="${w.to}"]`, canvas)
+        if(!fromEl || !toEl) return
+        const a = nodeCenter(fromEl)
+        const b = nodeCenter(toEl)
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line')
+        line.setAttribute('x1', a.x)
+        line.setAttribute('y1', a.y)
+        line.setAttribute('x2', b.x)
+        line.setAttribute('y2', b.y)
+        line.setAttribute('class', 'wire')
+        if(w.arrow){
+          line.setAttribute('marker-end', 'url(#arrow)')
+        }
+        svg.appendChild(line)
+      })
+    }
+
+    function selectNode(id){
+      state.selectedNodeId = id
+      render()
+    }
+
+    function addNode(){
+      const id = uid()
+      const rect = canvas.getBoundingClientRect()
+      const x = (rect.width/2 - 80) / state.zoom
+      const y = (rect.height/2 - 40) / state.zoom
+      state.nodes.push({id, x, y, title:'Idea', text:'Detalles...'})
+      state.selectedNodeId = id
+      render(); setStatus('Nodo agregado')
+    }
+
+    function deleteSelection(){
+      if(!state.selectedNodeId) return
+      const id = state.selectedNodeId
+      state.nodes = state.nodes.filter(n => n.id !== id)
+      state.wires = state.wires.filter(w => w.from !== id && w.to !== id)
+      state.selectedNodeId = null
+      render(); setStatus('Eliminado')
+    }
+
+    function startConnect(){
+      if(!state.connectingFrom){
+        if(!state.selectedNodeId){ setStatus('Selecciona un nodo primero'); return }
+        state.connectingFrom = state.selectedNodeId
+        el('#connect').dataset.active = 'true'
+        setStatus('Elige el nodo destino (Esc para cancelar)')
+      }
+    }
+
+    function finishConnect(toId){
+      if(!state.connectingFrom) return
+      if(state.connectingFrom === toId){ setStatus('No puedes conectar un nodo consigo mismo'); cancelConnect(); return }
+      state.wires.push({id: uid(), from: state.connectingFrom, to: toId, arrow: state.withArrow})
+      cancelConnect(); render(); setStatus('Conexión creada')
+    }
+
+    function cancelConnect(){
+      state.connectingFrom = null
+      el('#connect').dataset.active = 'false'
+    }
+
+    function toggleArrow(){
+      state.withArrow = !state.withArrow
+      el('#toggleArrow').dataset.active = state.withArrow ? 'true' : 'false'
+      setStatus(state.withArrow ? 'Flecha activada' : 'Flecha desactivada')
+    }
+
+    // Drag logic
+    function makeDraggable(nodeEl){
+      let start = null
+      const onMouseDown = (e)=>{
+        if(e.target.isContentEditable) return // allow text editing
+        selectNode(nodeEl.dataset.id)
+        start = {
+          x: e.clientX,
+          y: e.clientY,
+          left: parseFloat(nodeEl.style.left),
+          top: parseFloat(nodeEl.style.top)
+        }
+        document.addEventListener('mousemove', onMove)
+        document.addEventListener('mouseup', onUp)
+      }
+      const onMove = (e)=>{
+        if(!start) return
+        const dx = (e.clientX - start.x) / state.zoom
+        const dy = (e.clientY - start.y) / state.zoom
+        const nx = start.left + dx
+        const ny = start.top + dy
+        nodeEl.style.left = nx + 'px'
+        nodeEl.style.top = ny + 'px'
+        // also update state
+        const node = state.nodes.find(n => n.id === nodeEl.dataset.id)
+        node.x = nx; node.y = ny
+        // update wires live
+        renderWiresOnly()
+      }
+      const onUp = ()=>{
+        start = null
+        document.removeEventListener('mousemove', onMove)
+        document.removeEventListener('mouseup', onUp)
+      }
+      nodeEl.addEventListener('mousedown', onMouseDown)
+      // double click empty area selects for connect finish
+      nodeEl.addEventListener('click', (e)=>{
+        if(state.connectingFrom && !e.target.isContentEditable){
+          finishConnect(nodeEl.dataset.id)
+          e.stopPropagation()
+        }
+      })
+    }
+
+    function renderWiresOnly(){
+      updateSVGSize()
+      els('line.wire', svg).forEach(l => l.remove())
+      // redraw
+      state.wires.forEach(w => {
+        const fromEl = el(`.node[data-id="${w.from}"]`, canvas)
+        const toEl = el(`.node[data-id="${w.to}"]`, canvas)
+        if(!fromEl || !toEl) return
+        const a = nodeCenter(fromEl)
+        const b = nodeCenter(toEl)
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line')
+        line.setAttribute('x1', a.x)
+        line.setAttribute('y1', a.y)
+        line.setAttribute('x2', b.x)
+        line.setAttribute('y2', b.y)
+        line.setAttribute('class', 'wire')
+        if(w.arrow){ line.setAttribute('marker-end', 'url(#arrow)') }
+        svg.appendChild(line)
+      })
+    }
+
+    // Zoom
+    function setZoom(percent){
+      state.zoom = percent / 100
+      canvas.style.transform = `scale(${state.zoom})`
+      renderWiresOnly() // keep wires in sync
+      el('#resetZoom').textContent = `${percent}%`
+    }
+
+    // Export / Import
+    function exportJSON(){
+      const data = JSON.stringify({nodes: state.nodes, wires: state.wires}, null, 2)
+      const blob = new Blob([data], {type:'application/json'})
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'mapa-mental.json'
+      document.body.appendChild(a)
+      a.click(); a.remove()
+      URL.revokeObjectURL(url)
+      setStatus('Exportado como JSON')
+    }
+
+    function importJSON(file){
+      const reader = new FileReader()
+      reader.onload = (e)=>{
+        try{
+          const obj = JSON.parse(e.target.result)
+          if(!obj.nodes || !obj.wires) throw new Error('JSON inválido')
+          state.nodes = obj.nodes
+          state.wires = obj.wires
+          state.selectedNodeId = null
+          render(); setStatus('Importado correctamente')
+        }catch(err){
+          alert('No se pudo importar: ' + err.message)
+        }
+      }
+      reader.readAsText(file)
+    }
+
+    // Events
+    el('#addNode').addEventListener('click', addNode)
+    el('#deleteSel').addEventListener('click', deleteSelection)
+    el('#connect').addEventListener('click', startConnect)
+    el('#toggleArrow').addEventListener('click', toggleArrow)
+    el('#exportBtn').addEventListener('click', exportJSON)
+    el('#importBtn').addEventListener('click', ()=> el('#importInput').click())
+    el('#importInput').addEventListener('change', (e)=>{
+      const f = e.target.files[0]; if(f) importJSON(f)
+      e.target.value = ''
+    })
+    el('#zoom').addEventListener('input', (e)=> setZoom(+e.target.value))
+    el('#resetZoom').addEventListener('click', ()=>{ el('#zoom').value = 100; setZoom(100) })
+
+    // Keyboard shortcuts
+    document.addEventListener('keydown', (e)=>{
+      if(e.key.toLowerCase() === 'n'){ addNode() }
+      else if(e.key.toLowerCase() === 'c'){ startConnect() }
+      else if(e.key === 'Escape'){ cancelConnect() }
+      else if(e.key === 'Delete' || e.key === 'Backspace'){
+        // avoid deleting text when contenteditable focused
+        const active = document.activeElement
+        const isEditing = active && active.isContentEditable
+        if(!isEditing){
+          e.preventDefault(); deleteSelection()
+        }
+      }
+    })
+
+    // Click on empty canvas to end connection or clear selection
+    canvas.addEventListener('mousedown', (e)=>{
+      // only if clicked empty area
+      if(e.target === canvas || e.target === el('.grid')){
+        if(state.connectingFrom) cancelConnect()
+        state.selectedNodeId = null
+        render()
+      }
+    })
+
+    // Initial content
+    function seed(){
+      const a = {id: uid(), x: 240, y: 180, title:'Tema Central', text:'Doble clic para editar'}
+      const b = {id: uid(), x: 520, y: 120, title:'Idea A', text:'Detalles'}
+      const c = {id: uid(), x: 520, y: 260, title:'Idea B', text:'Notas'}
+      state.nodes.push(a,b,c)
+      state.wires.push({id: uid(), from: a.id, to: b.id, arrow:true},{id: uid(), from: a.id, to: c.id, arrow:true})
+      render()
+    }
+
+    window.addEventListener('resize', ()=>{ updateSVGSize(); renderWiresOnly() })
+
+    seed()
+  })()
+  </script>
+</body>
+</html>
